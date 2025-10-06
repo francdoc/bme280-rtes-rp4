@@ -292,7 +292,6 @@ void *opao(void *arg) {
             if (len == -1) { perror("[OPAO]: mq_receive HAO→OPAO"); break; }
 
             if (strncmp(buf, STATUS_RES ":", strlen(STATUS_RES)+1) == 0) {
-                printf("----------------------------------------------------\n");
                 clock_gettime(CLOCK_MONOTONIC, &now);
                 printf("[OPAO]: [%5ld.%09ld] %s From HAO\n",
                        now.tv_sec, now.tv_nsec, buf);
@@ -364,7 +363,7 @@ void *hao(void *arg) {
             len = mq_receive(mq_bao_hao, buf, MSG_SIZE+8, NULL);
             if (len == -1) { perror("[HAO]: mq_receive BAO→HAO"); break; }
             
-            if (strcmp(buf, POLL_RES) == 0) {
+            if (strncmp(buf, POLL_RES ":", strlen(POLL_RES) + 1) == 0) {
                 int got = len;  // length returned by mq_receive
                 fprintf(stderr, "[HAO]: Received from BAO → ");
                 for (int i = 0; i < got; i++) {
@@ -440,11 +439,26 @@ void *bao(void *arg) {
     return NULL;
 }
 
+#define RETRY_INIT
+
 int main(void) {
-    if (bme280Init(1, 0x76) != 0) 
-    {
-        fprintf(stderr, "[BAO]: BME280 init error\n");
-    }
+    #ifdef RETRY_INIT
+        while (1) {
+            if (bme280Init(1, 0x76) == 0) {
+                printf("BME280 initialized successfully\n");
+                break;
+            }
+            fprintf(stderr, "BME280 init error, retrying in 1s...\n");
+            sleep(1);
+        }
+    #endif
+
+    #ifndef  RETRY_INIT
+        if (bme280Init(1, 0x76) == 0) {
+            printf("BME280 initialized successfully\n");
+            break;
+        }
+    #endif
 
     struct mq_attr attr = {
         .mq_flags   = 0,
