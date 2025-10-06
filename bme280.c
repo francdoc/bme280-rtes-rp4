@@ -25,120 +25,96 @@ int bme280Init(int iChannel, int iAddr);
 
 int bme280Init(int iChannel, int iAddr)
 {
-    int i, rc;
+    int rc, nbytes;
     unsigned char ucTemp[32];
     unsigned char ucCal[36];
     char filename[32];
-    
-	sprintf(filename, "/dev/i2c-%d", iChannel);
-	if ((file_i2c = open(filename, O_RDWR)) < 0)
-	{
-		fprintf(stderr, "Failed to open the i2c bus\n");
-		file_i2c = 0;
-		return -1;
-	}
 
-	if (ioctl(file_i2c, I2C_SLAVE, iAddr) < 0)
-	{
-		fprintf(stderr, "Failed to acquire bus access or talk to slave\n");
-		file_i2c = 0;
-		return -1;
-	}
+    // build bus path
+    snprintf(filename, sizeof(filename), "/dev/i2c-%d", iChannel);
+    file_i2c = open(filename, O_RDWR);
+    if (file_i2c < 0) {
+        perror("bme280Init: open i2c bus");
+        return -1;
+    }
 
-	ucTemp[0] = 0xd0; // get ID
+    // point at the right slave address
+    rc = ioctl(file_i2c, I2C_SLAVE, iAddr);
+    if (rc < 0) {
+        perror("bme280Init: ioctl I2C_SLAVE");
+        close(file_i2c);
+        file_i2c = 0;
+        return -1;
+    }
 
-	rc = write(file_i2c, ucTemp, 1);
+    // read the chip ID register (0xD0) and verify
+    ucTemp[0] = 0xD0;
+    rc = write(file_i2c, ucTemp, 1);
+    if (rc < 0) {
+        perror("bme280Init: write ID");
+        close(file_i2c);
+        file_i2c = 0;
+        return -1;
+    }
 
-	i = read(file_i2c, ucTemp, 1);
+    nbytes = read(file_i2c, ucTemp, 1);
+    if (nbytes != 1) {
+        perror("bme280Init: read ID");
+        close(file_i2c);
+        file_i2c = 0;
+        return -1;
+    }
+    if (ucTemp[0] != 0x60) {
+        fprintf(stderr, "bme280Init: wrong ID 0x%02X, expected 0x60\n", ucTemp[0]);
+        close(file_i2c);
+        file_i2c = 0;
+        return -1;
+    }
 
-	if (rc < 0 || i != 1 || ucTemp[0] != 0x60)
-	{
-		printf("Error, ID doesn't match 0x60; wrong device?\n");
-		return -1;
-	}
-	// Read 24 bytes of calibration data
-	ucTemp[0] = 0x88; // starting 4from register 0x88
+    // Read 24 bytes of calibration data starting at 0x88
+    ucTemp[0] = 0x88;
+    write(file_i2c, ucTemp, 1);
+    read (file_i2c, ucCal, 24);
 
-	rc = write(file_i2c, ucTemp, 1);
+    // Read humidity calibration byte at 0xA1
+    ucTemp[0] = 0xA1;
+    write(file_i2c, ucTemp, 1);
+    read (file_i2c, &ucCal[24], 1);
 
-	i = read(file_i2c, ucCal, 24);
+    // Read remaining humidity calibration bytes at 0xE1
+    ucTemp[0] = 0xE1;
+    write(file_i2c, ucTemp, 1);
+    read (file_i2c, &ucCal[25], 7);
 
-	if (rc < 0 || i != 24)
-	{
-		printf("calibration data not read correctly\n");
-		return -1;
-	}
-	ucTemp[0] = 0xa1; // get humidity calibration byte
+    // Now unpack into your globals as you did before:
+    calT1 = ucCal[0]  | (ucCal[1] << 8);
+    calT2 = ucCal[2]  | (ucCal[3] << 8);  if (calT2 > 32767) calT2 -= 65536;
+    calT3 = ucCal[4]  | (ucCal[5] << 8);  if (calT3 > 32767) calT3 -= 65536;
 
-	rc = write(file_i2c, ucTemp, 1);
+    calP1 = ucCal[6]  | (ucCal[7] << 8);
+    calP2 = ucCal[8]  | (ucCal[9] << 8);  if (calP2 > 32767) calP2 -= 65536;
+    calP3 = ucCal[10] | (ucCal[11]<< 8);  if (calP3 > 32767) calP3 -= 65536;
+    calP4 = ucCal[12] | (ucCal[13]<< 8);  if (calP4 > 32767) calP4 -= 65536;
+    calP5 = ucCal[14] | (ucCal[15]<< 8);  if (calP5 > 32767) calP5 -= 65536;
+    calP6 = ucCal[16] | (ucCal[17]<< 8);  if (calP6 > 32767) calP6 -= 65536;
+    calP7 = ucCal[18] | (ucCal[19]<< 8);  if (calP7 > 32767) calP7 -= 65536;
+    calP8 = ucCal[20] | (ucCal[21]<< 8);  if (calP8 > 32767) calP8 -= 65536;
+    calP9 = ucCal[22] | (ucCal[23]<< 8);  if (calP9 > 32767) calP9 -= 65536;
 
-	i = read(file_i2c, &ucCal[24], 1);
+    calH1 = ucCal[24];
+    calH2 = ucCal[25] | (ucCal[26]<< 8);  if (calH2 > 32767) calH2 -= 65536;
+    calH3 = ucCal[27];
+    calH4 = (ucCal[28]<<4)  | (ucCal[29] & 0x0F);  if (calH4 > 2047) calH4 -= 4096;
+    calH5 = (ucCal[30]<<4)  | (ucCal[29] >> 4);    if (calH5 > 2047) calH5 -= 4096;
+    calH6 = ucCal[31];       if (calH6 > 127)    calH6 -= 256;
 
-	ucTemp[0] = 0xe1; // get 7 more humidity calibration bytes
+    // Finally configure the sensor as before
+    ucTemp[0] = 0xF2; ucTemp[1] = 0x01; write(file_i2c, ucTemp, 2);
+    ucTemp[0] = 0xF4; ucTemp[1] = 0x27; write(file_i2c, ucTemp, 2);
+    ucTemp[0] = 0xF5; ucTemp[1] = 0xA0; write(file_i2c, ucTemp, 2);
 
-	rc = write(file_i2c, ucTemp, 1);
-
-	i = read(file_i2c, &ucCal[25], 7);
-
-	if (rc < 0 || i < 0) // something went wrong
-	{}
-	// Prepare temperature calibration data
-	calT1 = ucCal[0] + (ucCal[1] << 8);
-	calT2 = ucCal[2] + (ucCal[3] << 8);
-	if (calT2 > 32767) calT2 -= 65536; // negative value
-	calT3 = ucCal[4] + (ucCal[5] << 8);
-	if (calT3 > 32767) calT3 -= 65536;
-	
-	// Prepare pressure calibration data
-	calP1 = ucCal[6] + (ucCal[7] << 8);
-	calP2 = ucCal[8] + (ucCal[9] << 8);
-	if (calP2 > 32767) calP2 -= 65536; // signed short
-	calP3 = ucCal[10] + (ucCal[11] << 8);
-	if (calP3 > 32767) calP3 -= 65536;
-	calP4 = ucCal[12] + (ucCal[13] << 8);
-	if (calP4 > 32767) calP4 -= 65536;
-	calP5 = ucCal[14] + (ucCal[15] << 8);
-	if (calP5 > 32767) calP5 -= 65536;
-	calP6 = ucCal[16] + (ucCal[17] << 8);
-	if (calP6 > 32767) calP6 -= 65536;
-	calP7 = ucCal[18] + (ucCal[19] << 8);
-	if (calP7 > 32767) calP7 -= 65536;
-	calP8 = ucCal[20] + (ucCal[21] << 8);
-	if (calP8 > 32767) calP8 -= 65536;
-	calP9 = ucCal[22] + (ucCal[23] << 8);
-	if (calP9 > 32767) calP9 -= 65536;
-
-	// Prepare humidity calibration data
-	calH1 = ucCal[24];
-	calH2 = ucCal[25] + (ucCal[26] << 8);
-	if (calH2 > 32767) calH2 -= 65536;
-	calH3 = ucCal[27];
-	calH4 = (ucCal[28] << 4) + (ucCal[29] & 0xf);
-	if (calH4 > 2047) calH4 -= 4096; // signed 12-bit
-	calH5 = (ucCal[30] << 4) + (ucCal[29] >> 4);
-	if (calH5 > 2047) calH5 -= 4096;
-	calH6 = ucCal[31];
-	if (calH6 > 127) calH6 -= 256; // signed char
-
-	ucTemp[0] = 0xf2; // control humidity register
-	ucTemp[1] = 0x01; // humidity over sampling rate = 1
-
-	rc = write(file_i2c, ucTemp, 2);
-
-	ucTemp[0] = 0xf4; // control measurement register
-	ucTemp[1] = 0x27; // normal mode, temp and pressure over sampling rate=1
-
-	rc = write(file_i2c, ucTemp, 2);
-
-	ucTemp[0] = 0xf5; // CONFIG
-	ucTemp[1] = 0xa0; // set stand by time to 1 second
-
-	rc = write(file_i2c, ucTemp, 2);
-
-	if (rc < 0) {} // suppress warning
-
-	return 0;
-} 
+    return 0;
+}
 
 // Six POSIX queues for ordered hand-offs:
 //   TS → OPAO   "/status_req_queue"
