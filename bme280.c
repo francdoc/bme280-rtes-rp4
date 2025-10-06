@@ -413,7 +413,7 @@ void *bao(void *arg) {
     int bao_counter = 0;
     struct pollfd p_fb = { .fd = fd_hao_bao, .events = POLLIN };
 
-    unsigned char ucTemp[8];
+    unsigned char data[8];
     while (1) {
         if (poll(&p_fb, 1, -1) == -1) { perror("[BAO]: poll"); break; }
         if (p_fb.revents & POLLIN) {
@@ -431,14 +431,14 @@ void *bao(void *arg) {
 
                 // do just the I²C
                 write(file_i2c, &cmd, 1);
-                read (file_i2c, ucTemp, 8);
+                read (file_i2c, data, 8);
 
                 // build reply: "POLL_RES:<n>\0" + 8 bytes
                 char hdr[MSG_SIZE];
                 int hlen = snprintf(hdr, MSG_SIZE, POLL_RES ":%d", ++bao_counter) + 1;
                 unsigned char msg[hlen + 8];
                 memcpy(msg, hdr, hlen);
-                memcpy(msg + hlen, ucTemp, 8);
+                memcpy(msg + hlen, data, 8);
 
                 // print out the header + raw bytes in hex
                 int total = hlen + 8;
