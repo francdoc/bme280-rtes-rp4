@@ -379,24 +379,26 @@ void *hao(void *arg) {
             len = mq_receive(mq_bao_hao, buf, MSG_SIZE+8, NULL);
             if (len == -1) { perror("[HAO]: mq_receive BAO→HAO"); break; }
             
-            int got = len;  // length returned by mq_receive
-            fprintf(stderr, "[HAO]: Received from BAO → ");
-            for (int i = 0; i < got; i++) {
-                fprintf(stderr, "%02X ", (unsigned char)buf[i]);
+            if (strcmp(buf, POLL_RES) == 0) {
+                int got = len;  // length returned by mq_receive
+                fprintf(stderr, "[HAO]: Received from BAO → ");
+                for (int i = 0; i < got; i++) {
+                    fprintf(stderr, "%02X ", (unsigned char)buf[i]);
+                }
+                fprintf(stderr, "\n");
+
+                // split header and raw
+                char *hdr = buf; // "POLL_RES:<n>\0"
+                unsigned char *raw = (unsigned char*)(buf + strlen(hdr) + 1);
+                int cnt = atoi(hdr + strlen(POLL_RES) + 1);
+                
+                decode_bme280_readout(raw, cnt, &last_T, &last_P, &last_H);
+
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                printf("[HAO]: [%5ld.%09ld] From BAO: count=%d, T=%d°C, P=%dPa, H=%d%%\n",
+                    now.tv_sec, now.tv_nsec, cnt, last_T, last_P, last_H);
+                fflush(stdout);
             }
-            fprintf(stderr, "\n");
-
-            // split header and raw
-            char *hdr = buf; // "POLL_RES:<n>\0"
-            unsigned char *raw = (unsigned char*)(buf + strlen(hdr) + 1);
-            int cnt = atoi(hdr + strlen(POLL_RES) + 1);
-            
-            decode_bme280_readout(raw, cnt, &last_T, &last_P, &last_H);
-
-            clock_gettime(CLOCK_MONOTONIC, &now);
-            printf("[HAO]: [%5ld.%09ld] From BAO: count=%d, T=%d°C, P=%dPa, H=%d%%\n",
-                   now.tv_sec, now.tv_nsec, cnt, last_T, last_P, last_H);
-            fflush(stdout);
         }
     }
     return NULL;
