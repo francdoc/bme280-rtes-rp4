@@ -30,7 +30,7 @@ int bme280Init(int iChannel, int iAddr)
     unsigned char ucCal[36];
     char filename[32];
 
-    // build bus path
+    // Build I²C bus path and open it
     snprintf(filename, sizeof(filename), "/dev/i2c-%d", iChannel);
     file_i2c = open(filename, O_RDWR);
     if (file_i2c < 0) {
@@ -38,43 +38,49 @@ int bme280Init(int iChannel, int iAddr)
         return -1;
     }
 
-    // point at the right slave address
-    rc = ioctl(file_i2c, I2C_SLAVE, iAddr);
-    if (rc < 0) {
+    // Point at the correct slave address
+    if (ioctl(file_i2c, I2C_SLAVE, iAddr) < 0) {
         perror("bme280Init: ioctl I2C_SLAVE");
         close(file_i2c);
-        file_i2c = 0;
         return -1;
     }
 
-    // read the chip ID register (0xD0) and verify
+    // Read and verify chip ID (0xD0 -> 0x60)
     ucTemp[0] = 0xD0;
     rc = write(file_i2c, ucTemp, 1);
     if (rc < 0) {
-        perror("bme280Init: write ID");
+        perror("bme280Init: write ID register");
         close(file_i2c);
-        file_i2c = 0;
         return -1;
     }
 
     nbytes = read(file_i2c, ucTemp, 1);
     if (nbytes != 1) {
-        perror("bme280Init: read ID");
+        perror("bme280Init: read ID register");
         close(file_i2c);
-        file_i2c = 0;
         return -1;
     }
     if (ucTemp[0] != 0x60) {
         fprintf(stderr, "bme280Init: wrong ID 0x%02X, expected 0x60\n", ucTemp[0]);
         close(file_i2c);
-        file_i2c = 0;
         return -1;
     }
 
     // Read 24 bytes of calibration data starting at 0x88
     ucTemp[0] = 0x88;
-    write(file_i2c, ucTemp, 1);
-    read (file_i2c, ucCal, 24);
+    rc = write(file_i2c, ucTemp, 1);
+    if (rc < 0) {
+        perror("bme280Init: write calib start");
+        close(file_i2c);
+        return -1;
+    }
+
+    nbytes = read(file_i2c, ucCal, 24);
+    if (nbytes != 24) {
+        perror("bme280Init: read calib block");
+        close(file_i2c);
+        return -1;
+    }
 
     // Read humidity calibration byte at 0xA1
     ucTemp[0] = 0xA1;
@@ -86,7 +92,6 @@ int bme280Init(int iChannel, int iAddr)
     write(file_i2c, ucTemp, 1);
     read (file_i2c, &ucCal[25], 7);
 
-    // Now unpack into your globals as you did before:
     calT1 = ucCal[0]  | (ucCal[1] << 8);
     calT2 = ucCal[2]  | (ucCal[3] << 8);  if (calT2 > 32767) calT2 -= 65536;
     calT3 = ucCal[4]  | (ucCal[5] << 8);  if (calT3 > 32767) calT3 -= 65536;
