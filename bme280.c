@@ -277,6 +277,7 @@ void *opao(void *arg) {
         if (pfds[0].revents & POLLIN) {
             len = mq_receive(mq_ts_opao, buf, MSG_SIZE, NULL);
             if (len == -1) { perror("[OPAO]: mq_receive TS→OPAO"); break; }
+
             if (strcmp(buf, STATUS_REQ) == 0) {
                 clock_gettime(CLOCK_MONOTONIC, &now);
                 printf("[OPAO]: [%5ld.%09ld] From TS: %s\n",
@@ -289,6 +290,7 @@ void *opao(void *arg) {
         if (pfds[1].revents & POLLIN) {
             len = mq_receive(mq_hao_opao, buf, MSG_SIZE, NULL);
             if (len == -1) { perror("[OPAO]: mq_receive HAO→OPAO"); break; }
+
             if (strncmp(buf, STATUS_RES ":", strlen(STATUS_RES)+1) == 0) {
                 printf("----------------------------------------------------\n");
                 clock_gettime(CLOCK_MONOTONIC, &now);
@@ -324,6 +326,7 @@ void *hao(void *arg) {
         if (pfds[0].revents & POLLIN) {
             len = mq_receive(mq_ts_hao, buf, MSG_SIZE, NULL);
             if (len == -1) { perror("[HAO]: mq_receive TS→HAO"); break; }
+
             if (strcmp(buf, POLL_REQ) == 0) {
                 clock_gettime(CLOCK_MONOTONIC, &now);
                 printf("[HAO]: [%5ld.%09ld] From TS: %s\n",
@@ -342,6 +345,7 @@ void *hao(void *arg) {
         if (pfds[1].revents & POLLIN) {
             len = mq_receive(mq_opao_hao, buf, MSG_SIZE, NULL);
             if (len == -1) { perror("[HAO]: mq_receive OPAO→HAO"); break; }
+
             if (strcmp(buf, STATUS_REQ) == 0) {
                 clock_gettime(CLOCK_MONOTONIC, &now);
                 printf("[HAO]: [%5ld.%09ld] From OPAO: %s\n",
@@ -400,7 +404,7 @@ void *bao(void *arg) {
         if (p_fb.revents & POLLIN) {
             len = mq_receive(mq_hao_bao, buf, MSG_SIZE+1, NULL);
             if (len == -1) { perror("[BAO]: mq_receive HAO→BAO"); break; }
-            // check header
+            
             if (strcmp(buf, POLL_REQ) == 0) {
                 clock_gettime(CLOCK_MONOTONIC, &now);
                 printf("[BAO]: [%5ld.%09ld] From HAO: %s\n",
