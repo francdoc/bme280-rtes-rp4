@@ -1,8 +1,3 @@
-/*
- gcc -pthread -o seq_demo seq_demo.c -lrt
- ./seq_demo
-*/
-
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,7 +22,6 @@ static int calP1, calP2, calP3, calP4, calP5, calP6, calP7, calP8, calP9;
 static int calH1, calH2, calH3, calH4, calH5, calH6;
 
 int bme280Init(int iChannel, int iAddr);
-int bme280ReadValues(int *T, int *P, int *H);
 
 int bme280Init(int iChannel, int iAddr)
 {
@@ -52,8 +46,11 @@ int bme280Init(int iChannel, int iAddr)
 	}
 
 	ucTemp[0] = 0xd0; // get ID
+
 	rc = write(file_i2c, ucTemp, 1);
+
 	i = read(file_i2c, ucTemp, 1);
+
 	if (rc < 0 || i != 1 || ucTemp[0] != 0x60)
 	{
 		printf("Error, ID doesn't match 0x60; wrong device?\n");
@@ -61,19 +58,28 @@ int bme280Init(int iChannel, int iAddr)
 	}
 	// Read 24 bytes of calibration data
 	ucTemp[0] = 0x88; // starting 4from register 0x88
+
 	rc = write(file_i2c, ucTemp, 1);
+
 	i = read(file_i2c, ucCal, 24);
+
 	if (rc < 0 || i != 24)
 	{
 		printf("calibration data not read correctly\n");
 		return -1;
 	}
 	ucTemp[0] = 0xa1; // get humidity calibration byte
+
 	rc = write(file_i2c, ucTemp, 1);
+
 	i = read(file_i2c, &ucCal[24], 1);
+
 	ucTemp[0] = 0xe1; // get 7 more humidity calibration bytes
+
 	rc = write(file_i2c, ucTemp, 1);
+
 	i = read(file_i2c, &ucCal[25], 7);
+
 	if (rc < 0 || i < 0) // something went wrong
 	{}
 	// Prepare temperature calibration data
@@ -116,78 +122,25 @@ int bme280Init(int iChannel, int iAddr)
 
 	ucTemp[0] = 0xf2; // control humidity register
 	ucTemp[1] = 0x01; // humidity over sampling rate = 1
+
 	rc = write(file_i2c, ucTemp, 2);
 
 	ucTemp[0] = 0xf4; // control measurement register
 	ucTemp[1] = 0x27; // normal mode, temp and pressure over sampling rate=1
+
 	rc = write(file_i2c, ucTemp, 2);
 
 	ucTemp[0] = 0xf5; // CONFIG
 	ucTemp[1] = 0xa0; // set stand by time to 1 second
+
 	rc = write(file_i2c, ucTemp, 2);
+
 	if (rc < 0) {} // suppress warning
 
 	return 0;
 } 
 
-int bme280ReadValues(int *T, int *P, int *H)
-{
-    unsigned char ucTemp[16];
-    int i,rc;
-    int t, p, h; // raw sensor values
-    int var1,var2,t_fine;
-    int64_t P_64;
-    int64_t var1_64, var2_64;
-
-	ucTemp[0] = 0xf7; // start of data registers we want
-	rc = write(file_i2c, ucTemp, 1); // write address of register to read
-	i = read(file_i2c, ucTemp, 8);
-	if (rc < 0 || i != 8)
-	{
-		return -1; // something went wrong
-	}
-	p = (ucTemp[0] << 12) + (ucTemp[1] << 4) + (ucTemp[2] >> 4);
-	t = (ucTemp[3] << 12) + (ucTemp[4] << 4) + (ucTemp[5] >> 4);
-	h = (ucTemp[6] << 8) + ucTemp[7];
-    //	printf("raw values: p = %d, t = %d, h = %d\n", p, t, h);
-	// Calculate calibrated temperature value
-	// the value is 100x C (e.g. 2601 = 26.01C)
-	var1 = ((((t >> 3) - (calT1 <<1))) * (calT2)) >> 11;
-	var2 = (((((t >> 4) - (calT1)) * ((t>>4) - (calT1))) >> 12) * (calT3)) >> 14;
-	t_fine = var1 + var2;
-	*T = (t_fine * 5 + 128) >> 8;
-
-	// Calculate calibrated pressure value
-	var1_64 = t_fine - 128000;
-	var2_64 = var1_64 * var1_64 * (int64_t)calP6;
-	var2_64 = var2_64 + ((var1_64 * (int64_t)calP5) << 17);
-	var2_64 = var2_64 + (((int64_t)calP4) << 35);
-	var1_64 = ((var1_64 * var1_64 * (int64_t)calP3)>>8) + ((var1_64 * (int64_t)calP2)<<12);
-	var1_64 = (((((int64_t)1)<<47)+var1_64))*((int64_t)calP1)>>33;
-	if (var1_64 == 0) {
-        *P = 0;
-    } else {
-        P_64 = 1048576 - p;
-        P_64 = (((P_64<<31)-var2_64)*3125)/var1_64;
-        var1_64 = (((int64_t)calP9) * (P_64>>13) * (P_64>>13)) >> 25;
-        var2_64 = (((int64_t)calP8) * P_64) >> 19;
-        P_64 = ((P_64 + var1_64 + var2_64) >> 8) + (((int64_t)calP7)<<4);
-        *P = (int)P_64 / 100;
-    }
-
-	// Calculate calibrated humidity value
-	var1 = (t_fine - 76800);
-	var1 = (((((h << 14) - ((calH4) << 20) - ((calH5) * var1)) + 
-		(16384)) >> 15) * (((((((var1 * (calH6)) >> 10) * (((var1 * (calH3)) >> 11) + (32768))) >> 10) + (2097152)) * (calH2) + 8192) >> 14));
-	var1 = (var1 - (((((var1 >> 15) * (var1 >> 15)) >> 7) * (calH1)) >> 4));
-	var1 = (var1 < 0? 0 : var1);
-	var1 = (var1 > 419430400 ? 419430400 : var1);
-	*H = var1 >> 12;
-	return 0;
-} 
-
 // Six POSIX queues for ordered hand-offs:
-//
 //   TS → OPAO   "/status_req_queue"
 //   TS → HAO    "/poll_req_queue"
 //   OPAO → HAO  "/status_req_opao2hao"
@@ -217,13 +170,62 @@ static mqd_t mq_hao_bao  = (mqd_t)-1;
 static mqd_t mq_bao_hao  = (mqd_t)-1;
 
 static int hao_counter = 0;
-static int last_bao_value = 0;  // <-- store the latest BAO number
+static int last_bao_value = 0; 
 static int fd_ts_opao;
 static int fd_ts_hao;
 static int fd_opao_hao;
 static int fd_hao_opao;
 static int fd_hao_bao;
 static int fd_bao_hao;
+
+void decode_bme280_readout(unsigned char *raw, int cnt, int *outT, int *outP, int *outH);
+
+void decode_bme280_readout(unsigned char *raw, int cnt, int *outT, int *outP, int *outH)
+{
+    // decode big-endian raw[0..2] into p, raw[3..5] into t, raw[6..7] into h
+    int p = (raw[0]<<12) | (raw[1]<<4) | (raw[2]>>4);
+    int t = (raw[3]<<12) | (raw[4]<<4) | (raw[5]>>4);
+    int h = (raw[6]<<8)  |  raw[7];
+
+    // now run your existing calibration math...
+    int var1 = ((((t >> 3) - (calT1 <<1))) * calT2) >> 11;
+    int var2 = (((((t >> 4) - calT1) * ((t>>4) - calT1)) >> 12) * calT3) >> 14;
+    int t_fine = var1 + var2;
+    int TT = (t_fine * 5 + 128) >> 8;
+
+    int64_t v1_64 = t_fine - 128000;
+    int64_t v2_64 = v1_64 * v1_64 * calP6;
+    v2_64 += (v1_64 * calP5) << 17;
+    v2_64 += ((int64_t)calP4) << 35;
+    v1_64  = ((v1_64*v1_64*calP3)>>8) + ((v1_64*calP2)<<12);
+    v1_64  = (((((int64_t)1)<<47)+v1_64)*calP1)>>33;
+    int PP = 0;
+    
+    if (v1_64) {
+        int64_t P_64 = 1048576 - p;
+        P_64 = (((P_64<<31)-v2_64)*3125)/v1_64;
+        v1_64 = (calP9 * (P_64>>13) * (P_64>>13)) >> 25;
+        v2_64 = (calP8 * P_64) >> 19;
+        P_64  = ((P_64 + v1_64 + v2_64)>>8) + ((int64_t)calP7<<4);
+        PP = P_64/100;
+    }
+
+    int varH = t_fine - 76800;
+    varH = (((((h<<14) - (calH4<<20) - (calH5*varH)) + 16384)>>15) *
+        (((((varH*calH6)>>10) * (((varH*calH3)>>11) + 32768))>>10) + 2097152) *
+        calH2 + 8192) >> 14;
+    varH = varH - (((((varH>>15)*(varH>>15))>>7)*calH1)>>4);
+    if (varH<0) varH=0;
+    if (varH>419430400) varH=419430400;
+    int HH = varH>>12;
+
+    // store for STATUS_RES replies
+    last_bao_value = cnt;
+
+    *outT = TT; // °C
+    *outP = PP; // Pa
+    *outH = HH; // %
+}
 
 void cleanup_and_exit(int signo) {
     if (mq_ts_opao  != (mqd_t)-1) { mq_close(mq_ts_opao);  mq_unlink(Q_TS_OPAO); }
@@ -319,11 +321,11 @@ void *opao(void *arg) {
     return NULL;
 }
 
-// HAO: handles POLL_REQ (forward to BAO), POLL_RES (store),
+// HAO: handles POLL_REQ (forward to BAO), POLL_RES+raw (store & decode),
 //      STATUS_REQ (reply using last_bao_value)
 void *hao(void *arg) {
     (void)arg;
-    char buf[MSG_SIZE];
+    char buf[MSG_SIZE + 8];// allow space for 8 raw bytes
     struct timespec now;
     ssize_t len;
     struct pollfd pfds[3] = {
@@ -331,6 +333,8 @@ void *hao(void *arg) {
         { .fd = fd_opao_hao, .events = POLLIN },
         { .fd = fd_bao_hao,  .events = POLLIN }
     };
+
+    int last_T = 0, last_P = 0, last_H = 0;
 
     while (1) {
         if (poll(pfds, 3, -1) == -1) { perror("[HAO]: poll"); break; }
@@ -345,10 +349,11 @@ void *hao(void *arg) {
                        now.tv_sec, now.tv_nsec, buf);
                 fflush(stdout);
 
-                // forward to BAO
-                if (mq_send(mq_hao_bao, buf, len, 0) == -1) {
-                    perror("[HAO]: mq_send HAO→BAO"); break;
-                }
+                // build "POLL_REQ\0" + 0xF7
+                unsigned char msg[MSG_SIZE+1];
+                memcpy(msg, POLL_REQ, strlen(POLL_REQ)+1); // include '\0'
+                msg[strlen(POLL_REQ)+1] = 0xF7; // raw I²C command
+                mq_send(mq_hao_bao, (char*)msg, strlen(POLL_REQ)+2, 0);
             }
         }
 
@@ -361,74 +366,87 @@ void *hao(void *arg) {
                 printf("[HAO]: [%5ld.%09ld] From OPAO: %s\n",
                        now.tv_sec, now.tv_nsec, buf);
                 fflush(stdout);
-                // reply using last_bao_value
                 char resp[MSG_SIZE];
-                snprintf(resp, MSG_SIZE, STATUS_RES ":%d", last_bao_value);
-                if (mq_send(mq_hao_opao, resp, strlen(resp)+1, 0) == -1) {
-                    perror("[HAO]: mq_send HAO→OPAO"); break;
-                }
+                snprintf(resp, MSG_SIZE,
+                         STATUS_RES ":%d T=%d P=%d H=%d",
+                         last_bao_value, last_T, last_P, last_H);
+                mq_send(mq_hao_opao, resp, strlen(resp)+1, 0);
             }
         }
 
-        // BAO → HAO: POLL_RES:<n>
+        // BAO → HAO: POLL_RES:<n>\0 + 8 raw bytes
         if (pfds[2].revents & POLLIN) {
-            len = mq_receive(mq_bao_hao, buf, MSG_SIZE, NULL);
+            len = mq_receive(mq_bao_hao, buf, MSG_SIZE+8, NULL);
             if (len == -1) { perror("[HAO]: mq_receive BAO→HAO"); break; }
-            if (strncmp(buf, POLL_RES ":", strlen(POLL_RES)+1) == 0) {
-                // parse and store the <n>
-                last_bao_value = atoi(buf + strlen(POLL_RES) + 1);
-                clock_gettime(CLOCK_MONOTONIC, &now);
-                printf("[HAO]: [%5ld.%09ld] From BAO: %s\n",
-                       now.tv_sec, now.tv_nsec, buf);
-                fflush(stdout);
+            
+            int got = len;  // length returned by mq_receive
+            fprintf(stderr, "[HAO]: Received from BAO → ");
+            for (int i = 0; i < got; i++) {
+                fprintf(stderr, "%02X ", (unsigned char)buf[i]);
             }
+            fprintf(stderr, "\n");
+
+            // split header and raw
+            char *hdr = buf; // "POLL_RES:<n>\0"
+            unsigned char *raw = (unsigned char*)(buf + strlen(hdr) + 1);
+            int cnt = atoi(hdr + strlen(POLL_RES) + 1);
+            
+            decode_bme280_readout(raw, cnt, &last_T, &last_P, &last_H);
+
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            printf("[HAO]: [%5ld.%09ld] From BAO: count=%d, T=%d°C, P=%dPa, H=%d%%\n",
+                   now.tv_sec, now.tv_nsec, cnt, last_T, last_P, last_H);
+            fflush(stdout);
         }
     }
     return NULL;
 }
 
-// BAO: listens for POLL_REQ forwarded by HAO → BAO,
-//      then replies with POLL_RES:<n>
+// BAO: listens for POLL_REQ\0+cmd → I²C transaction → reply POLL_RES:<n>\0 + 8 raw bytes
 void *bao(void *arg) {
     (void)arg;
-    char buf[MSG_SIZE];
+    char buf[MSG_SIZE+1];
     struct timespec now;
     ssize_t len;
     int bao_counter = 0;
     struct pollfd p_fb = { .fd = fd_hao_bao, .events = POLLIN };
 
-    int T, P, H; // calibrated values
-
-    if (bme280Init(1, 0x76) != 0) 
-    {
-        fprintf(stderr, "[BAO]: BME280 init error\n");
-    }
-    
+    unsigned char ucTemp[8];
     while (1) {
         if (poll(&p_fb, 1, -1) == -1) { perror("[BAO]: poll"); break; }
         if (p_fb.revents & POLLIN) {
-            len = mq_receive(mq_hao_bao, buf, MSG_SIZE, NULL);
+            len = mq_receive(mq_hao_bao, buf, MSG_SIZE+1, NULL);
             if (len == -1) { perror("[BAO]: mq_receive HAO→BAO"); break; }
+            // check header
             if (strcmp(buf, POLL_REQ) == 0) {
                 clock_gettime(CLOCK_MONOTONIC, &now);
                 printf("[BAO]: [%5ld.%09ld] From HAO: %s\n",
                        now.tv_sec, now.tv_nsec, buf);
                 fflush(stdout);
-                
-                if (bme280ReadValues(&T, &P, &H) == 0) {
-                    clock_gettime(CLOCK_MONOTONIC, &now);
-                    printf("[BAO]: [%5ld.%09ld] Sensor → T=%d°C  P=%dPa  H=%d%%\n",
-                        now.tv_sec, now.tv_nsec, T, P, H);
-                } else {
-                    fprintf(stderr, "[BAO]: Error reading BME280\n");
-                }
 
-                // send POLL_RES:<n>
-                char ack[MSG_SIZE];
-                snprintf(ack, MSG_SIZE, POLL_RES ":%d", ++bao_counter);
-                if (mq_send(mq_bao_hao, ack, strlen(ack)+1, 0) == -1) {
-                    perror("[BAO]: mq_send BAO→HAO"); break;
+                // extract raw command byte
+                uint8_t cmd = (uint8_t)buf[strlen(POLL_REQ)+1];
+
+                // do just the I²C
+                write(file_i2c, &cmd, 1);
+                read (file_i2c, ucTemp, 8);
+
+                // build reply: "POLL_RES:<n>\0" + 8 bytes
+                char hdr[MSG_SIZE];
+                int hlen = snprintf(hdr, MSG_SIZE, POLL_RES ":%d", ++bao_counter) + 1;
+                unsigned char msg[hlen + 8];
+                memcpy(msg, hdr, hlen);
+                memcpy(msg + hlen, ucTemp, 8);
+
+                // print out the header + raw bytes in hex
+                int total = hlen + 8;
+                fprintf(stderr, "[BAO]: Sending to HAO → ");
+                for (int i = 0; i < total; i++) {
+                    fprintf(stderr, "%02X ", ((unsigned char*)msg)[i]);
                 }
+                fprintf(stderr, "\n");
+            
+                mq_send(mq_bao_hao, (char*)msg, hlen + 8, 0);
             }
         }
     }
@@ -436,6 +454,11 @@ void *bao(void *arg) {
 }
 
 int main(void) {
+    if (bme280Init(1, 0x76) != 0) 
+    {
+        fprintf(stderr, "[BAO]: BME280 init error\n");
+    }
+
     struct mq_attr attr = {
         .mq_flags   = 0,
         .mq_maxmsg  = 10,
