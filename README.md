@@ -33,8 +33,8 @@ sudo build_run.sh
 
 **Notes:**
 
-* Default I²C bus is `1` (`/dev/i2c-1`) and address `0x76`. Change these in `main.c` if needed.
-* Sampling interval is defined by `INTERVAL_SEC` (default 1 second) in `ts.c`.
+* Default I²C bus is `1` (`/dev/i2c-1`) and address `0x76`.
+* Sampling interval is defined by `INTERVAL_SEC` (default 1 second).
 
 ## Logging
 
