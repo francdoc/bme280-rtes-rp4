@@ -422,8 +422,16 @@ void *bao(void *arg) {
 
                 // do just the I²C
                 write(file_i2c, &cmd, 1);
-                read (file_i2c, data, 8);
+                int rd = read(file_i2c, data, 8);
 
+                // -- log after the I2C transaction --
+                if (rd == 8) {
+                    printf("[BAO]: read %d raw bytes:", rd);
+                    for (int i = 0; i < 8; i++) printf(" %02X", data[i]);
+                    printf("\n");
+                } else {
+                    printf("[BAO]: I2C read error, expected 8 bytes, got %d\n", rd);
+                }
                 // build reply: "POLL_RES:<n>\0" + 8 bytes
                 char hdr[MSG_SIZE];
                 int hlen = snprintf(hdr, MSG_SIZE, POLL_RES ":%d", ++bao_counter) + 1;
