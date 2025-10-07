@@ -336,6 +336,10 @@ void *hao(void *arg) {
                 unsigned char msg[MSG_SIZE+1];
                 memcpy(msg, POLL_REQ, strlen(POLL_REQ)+1); // include '\0'
                 msg[strlen(POLL_REQ)+1] = 0xF7; // raw I²C command
+
+                // print the raw I²C command byte we will send (0xF7)
+                printf("[HAO]: sending raw I2C cmd -> 0x%02X to BAO\n",
+                msg[strlen(POLL_REQ)+1]);
                 mq_send(mq_hao_bao, (char*)msg, strlen(POLL_REQ)+2, 0);
             }
         }
@@ -413,6 +417,9 @@ void *bao(void *arg) {
                 // extract raw command byte
                 uint8_t cmd = (uint8_t)buf[strlen(POLL_REQ)+1];
 
+                // print the raw I²C command byte we just received (should be 0xF7)
+                printf("[BAO]: received raw I2C cmd -> 0x%02X from HAO\n", cmd);
+
                 // do just the I²C
                 write(file_i2c, &cmd, 1);
                 read (file_i2c, data, 8);
@@ -439,7 +446,7 @@ void *bao(void *arg) {
     return NULL;
 }
 
-#define RETRY_INIT
+// #define RETRY_INIT
 
 int main(void) {
     #ifdef RETRY_INIT
@@ -456,7 +463,7 @@ int main(void) {
     #ifndef  RETRY_INIT
         if (bme280Init(1, 0x76) == 0) {
             printf("BME280 initialized successfully\n");
-            break;
+            return 0;
         }
     #endif
 
