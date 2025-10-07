@@ -152,12 +152,6 @@ static mqd_t mq_bao_hao  = (mqd_t)-1;
 
 static int hao_counter = 0;
 static int last_bao_value = 0; 
-static int fd_ts_opao;
-static int fd_ts_hao;
-static int fd_opao_hao;
-static int fd_hao_opao;
-static int fd_hao_bao;
-static int fd_bao_hao;
 
 void decode_bme280_readout(unsigned char *raw, int cnt, int *outT, int *outP, int *outH);
 
@@ -215,12 +209,6 @@ void cleanup_and_exit(int signo) {
     if (mq_hao_opao != (mqd_t)-1) { mq_close(mq_hao_opao); mq_unlink(Q_HAO_OPAO);}
     if (mq_hao_bao  != (mqd_t)-1) { mq_close(mq_hao_bao);  mq_unlink(Q_HAO_BAO); }
     if (mq_bao_hao  != (mqd_t)-1) { mq_close(mq_bao_hao);  mq_unlink(Q_BAO_HAO); }
-    if (fd_ts_opao  >= 0) close(fd_ts_opao);
-    if (fd_ts_hao   >= 0) close(fd_ts_hao);
-    if (fd_opao_hao >= 0) close(fd_opao_hao);
-    if (fd_hao_opao >= 0) close(fd_hao_opao);
-    if (fd_hao_bao  >= 0) close(fd_hao_bao);
-    if (fd_bao_hao  >= 0) close(fd_bao_hao);
     printf("\nCleaned up on Ctrl-C\n");
     exit(EXIT_SUCCESS);
 }
@@ -266,11 +254,12 @@ void *opao(void *arg) {
     char buf[MSG_SIZE];
     struct timespec now;
     ssize_t len;
-    struct pollfd pfds[2] = {
-        { .fd = fd_ts_opao,  .events = POLLIN },
-        { .fd = fd_hao_opao, .events = POLLIN }
-    };
 
+    struct pollfd pfds[2] = {
+        { .fd = (int)mq_ts_opao,  .events = POLLIN },
+        { .fd = (int)mq_hao_opao, .events = POLLIN }
+    };
+    
     while (1) {
         if (poll(pfds, 2, -1) == -1) { perror("[OPAO]: poll"); break; }
 
@@ -310,10 +299,11 @@ void *hao(void *arg) {
     char buf[MSG_SIZE + 8];// allow space for 8 raw bytes
     struct timespec now;
     ssize_t len;
+
     struct pollfd pfds[3] = {
-        { .fd = fd_ts_hao,   .events = POLLIN },
-        { .fd = fd_opao_hao, .events = POLLIN },
-        { .fd = fd_bao_hao,  .events = POLLIN }
+        { .fd = (int)mq_ts_hao,   .events = POLLIN },
+        { .fd = (int)mq_opao_hao, .events = POLLIN },
+        { .fd = (int)mq_bao_hao,  .events = POLLIN }
     };
 
     int last_T = 0, last_P = 0, last_H = 0;
@@ -399,8 +389,8 @@ void *bao(void *arg) {
     struct timespec now;
     ssize_t len;
     int bao_counter = 0;
-    struct pollfd p_fb = { .fd = fd_hao_bao, .events = POLLIN };
-
+    struct pollfd p_fb = { .fd = (int)mq_hao_bao, .events = POLLIN };
+    
     unsigned char data[8];
     while (1) {
         if (poll(&p_fb, 1, -1) == -1) { perror("[BAO]: poll"); break; }
@@ -475,29 +465,31 @@ int main(void) {
         }
     #endif
 
+    pthread_t ts_tid, op_tid, ha_tid, bao_tid;
+    signal(SIGINT, cleanup_and_exit);
+
     struct mq_attr attr = {
         .mq_flags   = 0,
         .mq_maxmsg  = 10,
         .mq_msgsize = MSG_SIZE,
         .mq_curmsgs = 0
     };
-    pthread_t ts_tid, op_tid, ha_tid, bao_tid;
-    signal(SIGINT, cleanup_and_exit);
+    struct mq_attr attr_raw = attr;
+    attr_raw.mq_msgsize = MSG_SIZE + 8;  // BAO→HAO carries header + 8 raw bytes
 
-    /* create all six queues */
-    mq_ts_opao  = mq_open(Q_TS_OPAO,  O_CREAT|O_RDWR, 0666, &attr);
-    mq_ts_hao   = mq_open(Q_TS_HAO,   O_CREAT|O_RDWR, 0666, &attr);
-    mq_opao_hao = mq_open(Q_OPAO_HAO, O_CREAT|O_RDWR, 0666, &attr);
-    mq_hao_opao = mq_open(Q_HAO_OPAO, O_CREAT|O_RDWR, 0666, &attr);
-    mq_hao_bao  = mq_open(Q_HAO_BAO,  O_CREAT|O_RDWR, 0666, &attr);
-    mq_bao_hao  = mq_open(Q_BAO_HAO,  O_CREAT|O_RDWR, 0666, &attr);
+    /* create all six queues (nonblocking) */
+    mq_ts_opao  = mq_open(Q_TS_OPAO,  O_CREAT|O_RDWR|O_NONBLOCK, 0666, &attr);
+    mq_ts_hao   = mq_open(Q_TS_HAO,   O_CREAT|O_RDWR|O_NONBLOCK, 0666, &attr);
+    mq_opao_hao = mq_open(Q_OPAO_HAO, O_CREAT|O_RDWR|O_NONBLOCK, 0666, &attr);
+    mq_hao_opao = mq_open(Q_HAO_OPAO, O_CREAT|O_RDWR|O_NONBLOCK, 0666, &attr);
+    mq_hao_bao  = mq_open(Q_HAO_BAO,  O_CREAT|O_RDWR|O_NONBLOCK, 0666, &attr);
+    mq_bao_hao  = mq_open(Q_BAO_HAO,  O_CREAT|O_RDWR|O_NONBLOCK, 0666, &attr_raw);
 
-    fd_ts_opao  = open("/dev/mqueue" Q_TS_OPAO,  O_RDONLY);
-    fd_ts_hao   = open("/dev/mqueue" Q_TS_HAO,   O_RDONLY);
-    fd_opao_hao = open("/dev/mqueue" Q_OPAO_HAO, O_RDONLY);
-    fd_hao_opao = open("/dev/mqueue" Q_HAO_OPAO, O_RDONLY);
-    fd_hao_bao  = open("/dev/mqueue" Q_HAO_BAO,  O_RDONLY);
-    fd_bao_hao  = open("/dev/mqueue" Q_BAO_HAO,  O_RDONLY);
+    if (mq_ts_opao==(mqd_t)-1 || mq_ts_hao==(mqd_t)-1 || mq_opao_hao==(mqd_t)-1 ||
+        mq_hao_opao==(mqd_t)-1 || mq_hao_bao==(mqd_t)-1 || mq_bao_hao==(mqd_t)-1) {
+        perror("mq_open");
+        exit(EXIT_FAILURE);
+    }
 
     /* spawn threads */
     pthread_create(&ts_tid,  NULL, time_sequencer, NULL);
