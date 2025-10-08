@@ -125,6 +125,8 @@ int bme280Init(int iChannel, int iAddr)
 #define Q_TS_BAO   "/poll_req_queue"        // TS → BAO
 #define Q_TS_HAO   "/tick_hao"              // TS → HAO
 #define Q_BAO_HAO  "/poll_req_hao2bao_ack"  // BAO → HAO
+#define Q_TS_OPAO   "/tick_opao"      // TS → OPAO
+#define Q_HAO_OPAO  "/hao2opao_ctx"   // HAO → OPAO
 
 #define POLL_REQ   "POLL_REQ"
 #define POLL_RES   "POLL_RES"
@@ -136,41 +138,52 @@ static mqd_t mq_ts_bao  = (mqd_t)-1;
 static mqd_t mq_ts_hao  = (mqd_t)-1;
 static mqd_t mq_bao_hao = (mqd_t)-1;
 
+static mqd_t mq_ts_opao   = (mqd_t)-1;
+static mqd_t mq_hao_opao  = (mqd_t)-1;
+
 void cleanup_and_exit(int sig) {
     if(mq_ts_bao != (mqd_t)-1){ mq_close(mq_ts_bao); mq_unlink(Q_TS_BAO); }
     if(mq_ts_hao != (mqd_t)-1){ mq_close(mq_ts_hao); mq_unlink(Q_TS_HAO); }
     if(mq_bao_hao!=(mqd_t)-1){ mq_close(mq_bao_hao);mq_unlink(Q_BAO_HAO);}
+    if(mq_ts_opao!=(mqd_t)-1) { mq_close(mq_ts_opao);  mq_unlink(Q_TS_OPAO); }
+    if(mq_hao_opao!=(mqd_t)-1){ mq_close(mq_hao_opao); mq_unlink(Q_HAO_OPAO); }
     printf("\nclean exit\n");
     exit(0);
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// Time Sequencer: send POLL_REQ → BAO every half‐interval,
-//                and TS_TICK → HAO on the same beat
-
 void *time_sequencer(void *arg) {
     (void)arg;
+    struct timespec half = { 0, 500 * 1000 * 1000L }; // 50 ms
     struct timespec now;
-    struct timespec half = { 0, 500 * 1000 * 1000L };
     int tick_ctr = 0;
 
     while (1) {
         nanosleep(&half, NULL);
 
-        /* every 50 ms → POLL_REQ to BAO */
+        // every 50 ms → POLL_REQ to BAO
         mq_send(mq_ts_bao, POLL_REQ, strlen(POLL_REQ) + 1, 0);
         clock_gettime(CLOCK_MONOTONIC, &now);
         printf("[TS]: [%5ld.%09ld] Sent→BAO: %s\n",
                now.tv_sec, now.tv_nsec, POLL_REQ);
 
-        /* every *second* half (i.e. 100 ms) → TS_TICK to HAO */
-        if ((++tick_ctr & 1) == 0) {
+        // every 100 ms → TS_TICK to HAO
+        if ((tick_ctr & 1) == 1) {
             mq_send(mq_ts_hao, TS_TICK, strlen(TS_TICK) + 1, 0);
             clock_gettime(CLOCK_MONOTONIC, &now);
             printf("[TS]: [%5ld.%09ld] Sent→HAO: %s\n",
                    now.tv_sec, now.tv_nsec, TS_TICK);
+        }
+
+        // every 200 ms → TS_TICK to OPAO
+        if ((tick_ctr & 3) == 3) {
+            mq_send(mq_ts_opao, TS_TICK, strlen(TS_TICK) + 1, 0);
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            printf("[TS]: [%5ld.%09ld] Sent→OPAO: %s\n",
+                   now.tv_sec, now.tv_nsec, TS_TICK);
             printf("\n────────────────────────────────────────────────────────────\n");
         }
+
+        tick_ctr = (tick_ctr + 1) & 3;  // wrap 0..3
     }
     return NULL;
 }
@@ -208,7 +221,7 @@ void *bao(void *arg) {
                         perror("[BAO]: I2C read error");
                     continue;
                 } else {
-                    printf("[BAO]: I2C read: ");
+                    printf("[BAO]:                   I2C read: ");
                     for (int i = 0; i < 8; i++)
                         printf("%02X ", data[i]);
                     printf("\n");
@@ -231,8 +244,8 @@ void *bao(void *arg) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// HAO: listens on two queues: mq_ts_hao for TS_TICK, mq_bao_hao for data.
-// Caches the last sample; on each tick, prints it out.
+// HAO: listens on mq_ts_hao for TS_TICK, mq_bao_hao for data.
+// Caches the last sample; on each tick, prints it out, then forwards it to OPAO.
 
 void *hao(void *arg) {
     (void)arg;
@@ -248,18 +261,19 @@ void *hao(void *arg) {
     while (1) {
         if (poll(pfds, 2, -1) == -1) { perror("[HAO]:poll"); break; }
 
+        // 1) cache new data from BAO
         if (pfds[1].revents & POLLIN) {
             len = mq_receive(mq_bao_hao, buf, MSG_SIZE+8, NULL);
             if (len > (ssize_t)strlen(buf) + 1) {
                 memcpy(last_data, buf + strlen(buf) + 1, 8);
-                // cached silently, no immediate printf
             }
         }
 
-        // on tick, “compute” = print our cache exactly once per TS_TICK
+        // 2) on TS tick, process & forward that cached sample
         if (pfds[0].revents & POLLIN) {
             len = mq_receive(mq_ts_hao, buf, MSG_SIZE, NULL);
             if (len > 0 && strcmp(buf, TS_TICK) == 0) {
+                // print/process
                 clock_gettime(CLOCK_MONOTONIC, &now);
                 printf("[HAO]: [%5ld.%09ld] Tick → processing cached data:"
                        " %02X %02X %02X %02X %02X %02X %02X %02X\n",
@@ -267,8 +281,62 @@ void *hao(void *arg) {
                        last_data[0], last_data[1], last_data[2], last_data[3],
                        last_data[4], last_data[5], last_data[6], last_data[7]);
 
-                // *** clear the cache now that we've processed it ***
+                // forward to OPAO
+                {
+                    char hdr[MSG_SIZE];
+                    int hlen = snprintf(hdr, MSG_SIZE, "HAO_CTX:%ld", now.tv_sec) + 1;
+                    unsigned char msg[MSG_SIZE + 8];
+                    memcpy(msg, hdr, hlen);
+                    memcpy(msg + hlen, last_data, 8);
+                    mq_send(mq_hao_opao, (char*)msg, hlen + 8, 0);
+                }
+
+                // clear the cache now that it’s been sent
                 memset(last_data, 0, sizeof last_data);
+            }
+        }
+    }
+
+    return NULL;
+}
+
+// ── new OPAO thread ───────────────────────────────────────────────
+void *opao(void *arg) {
+    (void)arg;
+    char buf[MSG_SIZE+8];
+    unsigned char ctx[8] = {0};
+    struct pollfd pfds[2] = {
+        { .fd = (int)mq_ts_opao,  .events = POLLIN },
+        { .fd = (int)mq_hao_opao, .events = POLLIN }
+    };
+    ssize_t len;
+    struct timespec now;
+
+    while (1) {
+        if (poll(pfds, 2, -1) == -1) {
+            perror("[OPAO]:poll");
+            break;
+        }
+
+        // 1) capture new context from HAO?
+        if (pfds[1].revents & POLLIN) {
+            len = mq_receive(mq_hao_opao, buf, sizeof(buf), NULL);
+            if (len > (ssize_t)strlen(buf) + 1) {
+                memcpy(ctx, buf + strlen(buf) + 1, 8);
+                // silently cache
+            }
+        }
+
+        // 2) on its 200 ms tick, process cached context
+        if (pfds[0].revents & POLLIN) {
+            len = mq_receive(mq_ts_opao, buf, MSG_SIZE, NULL);
+            if (len>0 && strcmp(buf, TS_TICK)==0) {
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                printf("[OPAO]: [%5ld.%09ld] Tick → processing cached data:"
+                       " %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                       now.tv_sec, now.tv_nsec,
+                       ctx[0],ctx[1],ctx[2],ctx[3],
+                       ctx[4],ctx[5],ctx[6],ctx[7]);
             }
         }
     }
@@ -290,7 +358,9 @@ int main(void) {
     mq_ts_bao  = mq_open(Q_TS_BAO,  O_CREAT|O_RDWR|O_NONBLOCK,0666,&a);
     mq_ts_hao  = mq_open(Q_TS_HAO,  O_CREAT|O_RDWR|O_NONBLOCK,0666,&a);
     mq_bao_hao = mq_open(Q_BAO_HAO, O_CREAT|O_RDWR|O_NONBLOCK,0666,&a8);
-    if(mq_ts_bao==(mqd_t)-1||mq_ts_hao==(mqd_t)-1||mq_bao_hao==(mqd_t)-1){
+    mq_ts_opao  = mq_open(Q_TS_OPAO,  O_CREAT|O_RDWR|O_NONBLOCK,0666,&a);
+    mq_hao_opao = mq_open(Q_HAO_OPAO, O_CREAT|O_RDWR|O_NONBLOCK,0666,&a8);
+    if(mq_ts_bao==(mqd_t)-1||mq_ts_hao==(mqd_t)-1||mq_bao_hao==(mqd_t)-1 ||mq_ts_opao==(mqd_t)-1||mq_hao_opao==(mqd_t)-1){
         perror("mq_open"); exit(1);
     }
 
@@ -299,10 +369,14 @@ int main(void) {
     pthread_create(&btid,NULL,bao,NULL);
     pthread_create(&htid,NULL,hao,NULL);
 
+    pthread_t otid;
+    pthread_create(&otid,NULL,opao,NULL);
+
     pthread_join(ttid,NULL);
     pthread_join(btid,NULL);
     pthread_join(htid,NULL);
-
+    pthread_join(otid,NULL);
+    
     cleanup_and_exit(0);
     return 0;
 }
