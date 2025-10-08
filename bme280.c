@@ -122,79 +122,103 @@ int bme280Init(int iChannel, int iAddr)
     return 0;
 }
 
-#define Q_TS_BAO     "/poll_req_queue"          // TS → BAO
-#define Q_BAO_HAO    "/poll_req_hao2bao_ack"    // BAO → HAO
+#define Q_TS_BAO   "/poll_req_queue"        // TS → BAO
+#define Q_TS_HAO   "/tick_hao"              // TS → HAO
+#define Q_BAO_HAO  "/poll_req_hao2bao_ack"  // BAO → HAO
 
-#define POLL_REQ     "POLL_REQ"
-#define POLL_RES     "POLL_RES"
-#define MSG_SIZE     64
+#define POLL_REQ   "POLL_REQ"
+#define POLL_RES   "POLL_RES"
+#define TS_TICK    "TS_TICK"
+#define MSG_SIZE   64
 #define INTERVAL_SEC 1
 
 static mqd_t mq_ts_bao  = (mqd_t)-1;
+static mqd_t mq_ts_hao  = (mqd_t)-1;
 static mqd_t mq_bao_hao = (mqd_t)-1;
 
-void cleanup_and_exit(int signo) {
-    if (mq_ts_bao  != (mqd_t)-1) { mq_close(mq_ts_bao);  mq_unlink(Q_TS_BAO); }
-    if (mq_bao_hao != (mqd_t)-1) { mq_close(mq_bao_hao); mq_unlink(Q_BAO_HAO); }
-    printf("\nCleaned up on Ctrl-C\n");
-    exit(EXIT_SUCCESS);
+void cleanup_and_exit(int sig) {
+    if(mq_ts_bao != (mqd_t)-1){ mq_close(mq_ts_bao); mq_unlink(Q_TS_BAO); }
+    if(mq_ts_hao != (mqd_t)-1){ mq_close(mq_ts_hao); mq_unlink(Q_TS_HAO); }
+    if(mq_bao_hao!=(mqd_t)-1){ mq_close(mq_bao_hao);mq_unlink(Q_BAO_HAO);}
+    printf("\nclean exit\n");
+    exit(0);
 }
 
-// TS: sends POLL_REQ into BAO’s queue
+// ──────────────────────────────────────────────────────────────────────────
+// Time Sequencer: send POLL_REQ → BAO every half‐interval,
+//                and TS_TICK → HAO on the same beat
+
 void *time_sequencer(void *arg) {
     (void)arg;
-    struct timespec ts_half = { 0, INTERVAL_SEC * 1000000000L / 2 };
     struct timespec now;
+    struct timespec half = { 0, 500 * 1000 * 1000L };
+    int tick_ctr = 0;
 
     while (1) {
-        nanosleep(&ts_half, NULL);
+        nanosleep(&half, NULL);
+
+        /* every 50 ms → POLL_REQ to BAO */
         mq_send(mq_ts_bao, POLL_REQ, strlen(POLL_REQ) + 1, 0);
         clock_gettime(CLOCK_MONOTONIC, &now);
-        printf("[TS]: [%5ld.%09ld] Sent to BAO: %s\n",
+        printf("[TS]: [%5ld.%09ld] Sent→BAO: %s\n",
                now.tv_sec, now.tv_nsec, POLL_REQ);
-        fflush(stdout);
+
+        /* every *second* half (i.e. 100 ms) → TS_TICK to HAO */
+        if ((++tick_ctr & 1) == 0) {
+            mq_send(mq_ts_hao, TS_TICK, strlen(TS_TICK) + 1, 0);
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            printf("[TS]: [%5ld.%09ld] Sent→HAO: %s\n",
+                   now.tv_sec, now.tv_nsec, TS_TICK);
+            printf("\n────────────────────────────────────────────────────────────\n");
+        }
     }
     return NULL;
 }
 
+// ──────────────────────────────────────────────────────────────────────────
 // BAO: listens on mq_ts_bao for POLL_REQ → do I²C → reply on mq_bao_hao
+
 void *bao(void *arg) {
     (void)arg;
-    char buf[MSG_SIZE+1];
-    struct timespec now;
-    ssize_t len;
-    int bao_counter = 0;
-    struct pollfd p_fd = { .fd = (int)mq_ts_bao, .events = POLLIN };
+    char buf[MSG_SIZE];
+    struct pollfd p = { .fd = (int)mq_ts_bao, .events = POLLIN };
     unsigned char data[8];
+    ssize_t len;
+    int counter = 0;
+    struct timespec now;
 
     while (1) {
-        if (poll(&p_fd, 1, -1) == -1) { perror("[BAO]: poll"); break; }
-        if (p_fd.revents & POLLIN) {
-            len = mq_receive(mq_ts_bao, buf, MSG_SIZE+1, NULL);
+        if (poll(&p, 1, -1) == -1) { perror("[BAO]: poll"); break; }
+        if (p.revents & POLLIN) {
+            len = mq_receive(mq_ts_bao, buf, MSG_SIZE, NULL);
             if (len < 0) { perror("[BAO]: mq_receive"); break; }
-
             if (strcmp(buf, POLL_REQ) == 0) {
                 clock_gettime(CLOCK_MONOTONIC, &now);
                 printf("[BAO]: [%5ld.%09ld] From TS: %s\n",
                        now.tv_sec, now.tv_nsec, buf);
-                fflush(stdout);
 
-                // raw I2C read
+                // raw I2C for BME280 data read
                 uint8_t cmd = 0xF7;
                 write(file_i2c, &cmd, 1);
-                int rd = read(file_i2c, data, 8);
 
-                if (rd == 8) {
-                    printf("[BAO]: read %d bytes:", rd);
-                    for (int i = 0; i < rd; i++) printf(" %02X", data[i]);
-                    printf("\n");
+                int rd = read(file_i2c, data, 8);
+                if (rd != 8) {
+                    // only proceed when we got a full 8-byte sample
+                    if (rd < 0)
+                        perror("[BAO]: I2C read error");
+                    continue;
                 } else {
-                    printf("[BAO]: I2C read error, got %d bytes\n", rd);
+                    printf("[BAO]: I2C read: ");
+                    for (int i = 0; i < 8; i++)
+                        printf("%02X ", data[i]);
+                    printf("\n");
                 }
 
-                // build and send reply
+                fflush(stdout);
+
+                // build header + data
                 char hdr[MSG_SIZE];
-                int hlen = snprintf(hdr, MSG_SIZE, POLL_RES ":%d", ++bao_counter) + 1;
+                int hlen = snprintf(hdr, MSG_SIZE, POLL_RES ":%d", ++counter) + 1;
                 unsigned char msg[MSG_SIZE + 8];
                 memcpy(msg, hdr, hlen);
                 memcpy(msg + hlen, data, 8);
@@ -206,33 +230,78 @@ void *bao(void *arg) {
     return NULL;
 }
 
-int main(void) {
-    signal(SIGINT, cleanup_and_exit);
+// ──────────────────────────────────────────────────────────────────────────
+// HAO: listens on two queues: mq_ts_hao for TS_TICK, mq_bao_hao for data.
+// Caches the last sample; on each tick, prints it out.
 
-    // init BME280
-    if (bme280Init(1, 0x76) < 0) {
-        printf("[MAIN]: failed to init BME280 sensor.\n");
+void *hao(void *arg) {
+    (void)arg;
+    char buf[MSG_SIZE+8];
+    unsigned char last_data[8] = {0};
+    struct pollfd pfds[2] = {
+        { .fd=(int)mq_ts_hao,  .events=POLLIN },
+        { .fd=(int)mq_bao_hao, .events=POLLIN }
     };
+    ssize_t len;
+    struct timespec now;
 
-    // prepare queues
-    struct mq_attr attr = { .mq_flags=0, .mq_maxmsg=10, .mq_msgsize=MSG_SIZE, .mq_curmsgs=0 };
-    struct mq_attr attr_raw = attr; attr_raw.mq_msgsize = MSG_SIZE + 8;
+    while (1) {
+        if (poll(pfds, 2, -1) == -1) { perror("[HAO]:poll"); break; }
 
-    mq_ts_bao  = mq_open(Q_TS_BAO,  O_CREAT|O_RDWR|O_NONBLOCK, 0666, &attr);
-    mq_bao_hao = mq_open(Q_BAO_HAO, O_CREAT|O_RDWR|O_NONBLOCK, 0666, &attr_raw);
-    if (mq_ts_bao == (mqd_t)-1 || mq_bao_hao == (mqd_t)-1) {
-        perror("mq_open");
-        exit(EXIT_FAILURE);
+        if (pfds[1].revents & POLLIN) {
+            len = mq_receive(mq_bao_hao, buf, MSG_SIZE+8, NULL);
+            if (len > (ssize_t)strlen(buf) + 1) {
+                memcpy(last_data, buf + strlen(buf) + 1, 8);
+                // cached silently, no immediate printf
+            }
+        }
+
+        // on tick, “compute” = print our cache exactly once per TS_TICK
+        if (pfds[0].revents & POLLIN) {
+            len = mq_receive(mq_ts_hao, buf, MSG_SIZE, NULL);
+            if (len > 0 && strcmp(buf, TS_TICK) == 0) {
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                printf("[HAO]: [%5ld.%09ld] Tick → processing cached data:"
+                       " %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                       now.tv_sec, now.tv_nsec,
+                       last_data[0], last_data[1], last_data[2], last_data[3],
+                       last_data[4], last_data[5], last_data[6], last_data[7]);
+
+                // *** clear the cache now that we've processed it ***
+                memset(last_data, 0, sizeof last_data);
+            }
+        }
+    }
+    return NULL;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+
+int main(void) {
+    signal(SIGINT,cleanup_and_exit);
+
+    if(bme280Init(1,0x76)<0) {
+        fprintf(stderr,"[MAIN]: BME280 init failed, continuing anyway\n");
     }
 
-    // spawn threads
-    pthread_t ts_tid, bao_tid;
-    pthread_create(&ts_tid,  NULL, time_sequencer, NULL);
-    pthread_create(&bao_tid, NULL, bao,           NULL);
+    struct mq_attr a={ .mq_flags=0,.mq_maxmsg=10,.mq_msgsize=MSG_SIZE,.mq_curmsgs=0 };
+    struct mq_attr a8=a; a8.mq_msgsize = MSG_SIZE+8;
 
-    // wait
-    pthread_join(ts_tid,  NULL);
-    pthread_join(bao_tid, NULL);
+    mq_ts_bao  = mq_open(Q_TS_BAO,  O_CREAT|O_RDWR|O_NONBLOCK,0666,&a);
+    mq_ts_hao  = mq_open(Q_TS_HAO,  O_CREAT|O_RDWR|O_NONBLOCK,0666,&a);
+    mq_bao_hao = mq_open(Q_BAO_HAO, O_CREAT|O_RDWR|O_NONBLOCK,0666,&a8);
+    if(mq_ts_bao==(mqd_t)-1||mq_ts_hao==(mqd_t)-1||mq_bao_hao==(mqd_t)-1){
+        perror("mq_open"); exit(1);
+    }
+
+    pthread_t ttid, btid, htid;
+    pthread_create(&ttid,NULL,time_sequencer,NULL);
+    pthread_create(&btid,NULL,bao,NULL);
+    pthread_create(&htid,NULL,hao,NULL);
+
+    pthread_join(ttid,NULL);
+    pthread_join(btid,NULL);
+    pthread_join(htid,NULL);
 
     cleanup_and_exit(0);
     return 0;
